@@ -6,7 +6,7 @@
   "scripts": { "start": "node index.mjs" },
   "engines": { "node": ">=20" },
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.7.9",
+    "@whiskeysockets/baileys": "^6.7.0",
     "express": "^4.19.2",
     "pino": "^9.4.0",
     "qrcode": "^1.5.4"
