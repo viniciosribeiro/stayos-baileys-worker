@@ -1,0 +1,66 @@
+# StayOS Web - Dockerfile
+# Next.js App Router
+
+FROM node:20-alpine AS base
+
+# Configurar ambiente
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+
+# Criar usuário não-root
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nextjs -u 1001
+
+# Instalar dependências
+WORKDIR /app
+
+# Copiar arquivos de dependências
+COPY package.json pnpm-workspace.yaml ./
+COPY packages/db/package.json packages/db/
+COPY packages/ui/package.json packages/ui/
+COPY packages/ai/package.json packages/ai/
+COPY packages/payments/package.json packages/payments/
+COPY packages/training/package.json packages/training/
+COPY apps/web/package.json apps/web/
+
+# Instalar pnpm
+RUN npm install -g pnpm@8.15.0
+
+# Instalar dependências
+RUN pnpm install --frozen-lockfile
+
+# Copiar código fonte
+COPY . .
+
+# Build da aplicação
+RUN pnpm --filter @stayos/web build
+
+# Stage de produção
+FROM node:20-alpine AS runner
+
+# Criar usuário não-root
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nextjs -u 1001
+
+WORKDIR /app
+
+# Copiar arquivos do build
+COPY --from=base --chown=nextjs:nodejs /app/apps/web/.next/standalone ./
+COPY --from=base --chown=nextjs:nodejs /app/apps/web/.next/static ./static
+COPY --from=base --chown=nextjs:nodejs /app/apps/web/public ./public
+
+# Copiar pacotes compartilhados
+COPY --from=base --chown=nextjs:nodejs /app/packages/db/dist ./packages/db/dist
+COPY --from=base --chown=nextjs:nodejs /app/packages/ui/dist ./packages/ui/dist
+COPY --from=base --chown=nextjs:nodejs /app/packages/ai/dist ./packages/ai/dist
+COPY --from=base --chown=nextjs:nodejs /app/packages/payments/dist ./packages/payments/dist
+COPY --from=base --chown=nextjs:nodejs /app/packages/training/dist ./packages/training/dist
+
+# Usar usuário não-root
+USER nextjs
+
+# Expor porta
+EXPOSE 3000
+
+# Comando de inicialização
+CMD ["node", "server.js"]
