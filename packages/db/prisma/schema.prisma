@@ -1,0 +1,1963 @@
+// StayOS - Multi-tenant Hotelaria SaaS Platform
+// Schema Prisma com isolamento RLS nativo por tenant_id
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// ENUMS GLOBAIS
+// ============================================================================
+
+enum UserRole {
+  MASTER_ADMIN
+  TENANT_ADMIN
+  TENANT_RECEPTIONIST
+  TENANT_MANAGER
+  TENANT_STAFF
+}
+
+enum TenantStatus {
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  SUSPENDED
+  CANCELLED
+}
+
+enum SubscriptionStatus {
+  INACTIVE
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  UNPAID
+}
+
+enum PaymentProvider {
+  STRIPE
+  MERCADO_PAGO
+  ASAAS
+}
+
+enum PaymentMethodType {
+  CARD
+  PIX
+  BOLETO
+  TRANSFER
+}
+
+enum TokenProvider {
+  OPENAI
+  ANTHROPIC
+  ELEVENLABS
+  WHISPER
+  GOOGLE
+  AZURE
+  OLLAMA
+  OPENROUTER
+}
+
+enum AIModel {
+  GPT4
+  GPT4O
+  GPT35
+  CLAUDE3
+  CLAUDE2
+  ELEVENLABS_V2
+  WHISPER1
+}
+
+enum ChannelType {
+  WHATSAPP_OFFICIAL
+  WHATSAPP_UNOFFICIAL
+  INSTAGRAM
+  FACEBOOK
+  TELEGRAM
+  SMS
+  EMAIL
+  WEBCHAT
+  PHONE
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum MessageStatus {
+  PENDING
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+enum ReservationStatus {
+  PENDING
+  CONFIRMED
+  CHECKED_IN
+  CHECKED_OUT
+  CANCELLED
+  NO_SHOW
+}
+
+enum RoomStatus {
+  AVAILABLE
+  OCCUPIED
+  MAINTENANCE
+  BLOCKED
+}
+
+enum RateType {
+  PER_NIGHT
+  PER_PERSON
+  PER_ROOM
+  PACKAGE
+}
+
+enum AgePricingModel {
+  FREE
+  PERCENTAGE_OF_ADULT
+  FIXED_PER_NIGHT
+  SAME_AS_ADULT
+}
+
+enum TourHierarchyLevel {
+  WELCOME
+  MODULE
+  SUBMODULE
+  FUNCTION
+  MICROHELP
+}
+
+enum TourStatus {
+  DRAFT
+  PUBLISHED
+  DEPRECATED
+  OUTDATED
+}
+
+enum TrainingProgressStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  COMPLETED
+  ABANDONED
+}
+
+enum AuditAction {
+  LOGIN
+  LOGOUT
+  AUTH_FAILURE
+  PERMISSION_CHANGE
+  REFUND_ISSUED
+  SUBSCRIPTION_STATUS_CHANGE
+  GUEST_DATA_ACCESS
+  API_KEY_CHANGE
+  TENANT_SUSPENSION
+  TENANT_REACTIVATION
+  DATA_EXPORT
+  DATA_ANONYMIZATION
+  PAYMENT_PROCESSED
+  WEBHOOK_RECEIVED
+}
+
+enum FiscalDocumentType {
+  NFS_E
+  NF_E
+  RECEIPT
+}
+
+enum DunningAttemptStatus {
+  PENDING
+  SENT
+  FAILED
+  BOUNCED
+}
+
+enum ComissionTierType {
+  PERCENTAGE
+  FIXED
+}
+
+// ============================================================================
+// TABELAS DE CONFIGURAÇÃO GLOBAL (MASTER)
+// ============================================================================
+
+// Configurações de UI do Painel Master (Módulo 0)
+model MasterUISettings {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Identidade
+  systemName  String    @default("StayOS")
+  logoUrl     String?
+  logoCompactUrl String?
+  faviconUrl  String?
+  
+  // Paleta de Cores (HSL base para cálculo automático de variantes)
+  colorConfig  Json     // { primary: { h: 210, s: 100, l: 50 }, secondary: {...}, etc. }
+  
+  // Tipografia
+  fontHeadings String   @default("Inter")
+  fontBody     String   @default("Inter")
+  
+  // Bordas e Raios
+  borderRadius  Int      @default(8)
+  
+  // Comportamento de Telas
+  defaultModuleOpenMode String @default("FULL_PAGE") // FULL_PAGE, MODAL_CENTER, DRAWER_RIGHT, DRAWER_LEFT, SPLIT_PANEL
+  interfaceDensity String @default("COMFORTABLE") // COMPACT, COMFORTABLE, SPACIOUS
+  themeMode      String @default("DARK") // DARK, LIGHT, AUTO
+  animationsEnabled Boolean @default(true)
+  sidebarInitialState String @default("EXPANDED") // EXPANDED, COLLAPSED
+  sidebarHoverBehavior String @default("EXPAND") // EXPAND, NONE
+  
+  // Layout do Dashboard
+  dashboardLayout Json? // react-grid-layout config
+}
+
+// Configurações de Design System (Módulo 5)
+model DesignSystemTheme {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  name        String    @unique
+  description String?
+  
+  // Paleta
+  colors      Json     // { primary: "#3b82f6", secondary: "#10b981", etc. }
+  
+  // Tipografia
+  fontFamily  Json     // { headings: "Inter", body: "Inter" }
+  fontSizes   Json     // { xs: "0.75rem", sm: "0.875rem", ... }
+  
+  // Espaçamento e Bordas
+  spacing     Json     // { xs: "0.25rem", sm: "0.5rem", ... }
+  borderRadius Json    // { sm: "0.25rem", md: "0.5rem", lg: "1rem" }
+  
+  // Distribuição por Plano
+  allowedPlans String[] @default(["Starter", "Pro", "Enterprise"])
+  
+  // Controle de Override
+  allowTenantOverride Boolean @default(true)
+}
+
+// ============================================================================
+// TABELAS DE TENANTS E USUÁRIOS
+// ============================================================================
+
+model Tenant {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Identificação
+  name        String
+  slug        String    @unique
+  domain      String?   @unique
+  
+  // Status (derivado do Módulo 1.B, nunca setado manualmente)
+  status      TenantStatus @default(TRIAL)
+  
+  // Plano
+  planId      String
+  plan        PlatformPlan @relation(fields: [planId], references: [id])
+  
+  // Configurações de UI (override do Master)
+  uiConfig    Json?    // { theme: "DARK", colors: {...}, etc. }
+  
+  // Configurações de Design System
+  themeId     String?
+  theme       DesignSystemTheme? @relation(fields: [themeId], references: [id])
+  
+  // Onboarding
+  onboardingCompleted Boolean @default(false)
+  onboardingProgress  Json?    // Checklist de setup
+  
+  // Conta Conectada (Módulo 1.B)
+  connectedAccountId String?
+  connectedAccount ConnectedAccount? @relation(fields: [connectedAccountId], references: [id])
+  
+  // Metadados
+  metadata    Json?
+  
+  // RLS Policy: tenant_id = id
+  @@map("tenants")
+}
+
+model User {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Autenticação
+  email       String    @unique
+  passwordHash String
+  
+  // Informações Pessoais
+  firstName   String?
+  lastName    String?
+  phone       String?
+  avatarUrl   String?
+  
+  // Papel e Tenant
+  role        UserRole
+  tenantId    String?
+  tenant      Tenant?   @relation(fields: [tenantId], references: [id])
+  
+  // 2FA (Módulo 6)
+  totpSecret  String?
+  totpEnabled Boolean @default(false)
+  
+  // Status
+  isActive    Boolean   @default(true)
+  lastLoginAt DateTime?
+  
+  // Preferências
+  preferences Json?     // { language: "pt-BR", timezone: "America/Sao_Paulo" }
+  
+  // RLS Policy: tenant_id = tenantId OR role = MASTER_ADMIN
+  @@unique([email, tenantId])
+  @@map("users")
+}
+
+// Sessões de Autenticação
+model Session {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  expiresAt   DateTime
+  
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  token       String    @unique
+  ipAddress   String?
+  userAgent   String?
+  
+  @@map("sessions")
+}
+
+// ============================================================================
+// MÓDULO 1.B - SAAS BILLING ENGINE & REVENUE OPERATIONS
+// ============================================================================
+
+// Planos da Plataforma
+model PlatformPlan {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Identificação
+  name        String    @unique
+  description String?
+  
+  // Preços
+  basePrice   Int       // Mensalidade fixa em centavos
+  annualPrice Int?      // Preço anual (opcional)
+  
+  // Cota de Tokens (Módulo 2)
+  tokenQuota  Int       // Tokens incluídos por mês
+  tokenMarkup Int       // Markup percentual para excedentes
+  
+  // Comissão Transacional (escalonada)
+  commissionTiers Json  // [{ tier: 1, minAmount: 0, maxAmount: 2000000, percentage: 3.5 }, ...]
+  
+  // Canais Omnichannel
+  channelQuota Int      // Número de canais incluídos
+  
+  // Feature Flags
+  featureFlags Json     // { voiceCloning: false, byok: false, advancedAnalytics: true, ... }
+  
+  // Status
+  isActive    Boolean   @default(true)
+  isPublic    Boolean   @default(true)
+  
+  // Ordenação
+  sortOrder   Int       @default(0)
+  
+  @@map("platform_plans")
+}
+
+// Assinaturas dos Tenants
+model PlatformSubscription {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relacionamentos
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+  
+  planId      String
+  plan        PlatformPlan @relation(fields: [planId], references: [id])
+  
+  // Status (Máquina de Estados)
+  status      SubscriptionStatus @default(INACTIVE)
+  
+  // Ciclo
+  currentPeriodStart DateTime
+  currentPeriodEnd   DateTime
+  
+  // Trial
+  trialStart  DateTime?
+  trialEnd    DateTime?
+  
+  // IDs Externos (Gateways)
+  stripeSubscriptionId String?
+  mercadoPagoSubscriptionId String?
+  asaasSubscriptionId String?
+  
+  // Método de Pagamento
+  defaultPaymentMethodId String?
+  
+  // Cancelamento
+  cancelAtPeriodEnd Boolean @default(false)
+  canceledAt        DateTime?
+  cancellationReason String?
+  
+  // Metadados
+  metadata    Json?
+  
+  // RLS Policy: tenant_id = tenantId OR role = MASTER_ADMIN
+  @@unique([tenantId])
+  @@map("platform_subscriptions")
+}
+
+// Métodos de Pagamento (apenas tokens, nunca PAN)
+model PlatformPaymentMethod {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relacionamentos
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+  
+  subscriptionId String?
+  subscription PlatformSubscription? @relation(fields: [subscriptionId], references: [id])
+  
+  // Provider
+  provider    PaymentProvider
+  
+  // Dados do Cartão (tokenizado)
+  paymentMethodId String // ID do método no gateway
+  cardBrand     String?
+  cardLast4     String?
+  cardExpMonth  Int?
+  cardExpYear   Int?
+  
+  // Status
+  isDefault    Boolean   @default(false)
+  isActive     Boolean   @default(true)
+  
+  // RLS Policy: tenant_id = tenantId OR role = MASTER_ADMIN
+  @@map("platform_payment_methods")
+}
+
+// Contas Conectadas (KYC - Módulo 1.B)
+model ConnectedAccount {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relacionamentos
+  tenantId    String    @unique
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+  
+  // Provider
+  provider    PaymentProvider
+  
+  // IDs Externos
+  stripeAccountId String?
+  mercadoPagoUserId String?
+  asaasAccountId String?
+  
+  // Status de KYC
+  kycStatus   String    // pending, verified, rejected
+  kycDetails  Json?     // Detalhes do KYC
+  
+  // Dados Bancários (para repasse)
+  bankAccount Json?     // { bank: "Itaú", agency: "1234", account: "56789", cpfCnpj: "..." }
+  
+  // Status
+  isActive    Boolean   @default(false)
+  
+  // RLS Policy: tenant_id = tenantId OR role = MASTER_ADMIN
+  @@map("connected_accounts")
+}
+
+// Faturas da Plataforma
+model PlatformInvoice {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relacionamentos
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+  
+  subscriptionId String
+  subscription PlatformSubscription @relation(fields: [subscriptionId], references: [id])
+  
+  // Período
+  periodStart  DateTime
+  periodEnd    DateTime
+  
+  // Valores (em centavos)
+  subtotal    Int       // Mensalidade + excedentes
+  taxAmount   Int       @default(0)
+  totalAmount Int
+  
+  // Itens da Fatura
+  items       PlatformInvoiceItem[]
+  
+  // Status
+  status      String    // draft, open, paid, void, uncollectible
+  
+  // Pagamento
+  paidAt      DateTime?
+  paymentMethodId String?
+  
+  // Documento Fiscal
+  fiscalDocumentId String?
+  fiscalDocument FiscalDocument? @relation(fields: [fiscalDocumentId], references: [id])
+  
+  // Metadados
+  metadata    Json?
+  
+  // RLS Policy: tenant_id = tenantId OR role = MASTER_ADMIN
+  @@map("platform_invoices")
+}
+
+// Itens de Fatura
+model PlatformInvoiceItem {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  
+  // Relacionamentos
+  invoiceId   String
+  invoice     PlatformInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  
+  // Tipo
+  type        String    // subscription, token_usage, commission, addon, adjustment
+  
+  // Descrição
+  description String
+  
+  // Valores (em centavos)
+  amount      Int
+  quantity    Int       @default(1)
+  
+  // Referência
+  referenceId String?   // ID do recurso (ex: token_usage_id, reservation_id)
+  
+  // Metadados
+  metadata    Json?
+  
+  @@map("platform_invoice_items")
+}
+
+// Eventos de Billing (Webhooks)
+model PlatformBillingEvent {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  
+  // Relacionamentos
+  tenantId    String?
+  subscriptionId String?
+  invoiceId   String?
+  
+  // Evento
+  eventType   String    // payment_intent.succeeded, invoice.paid, subscription.created, etc.
+  provider    PaymentProvider
+  
+  // Dados do Evento
+  payload     Json
+  
+  // Idempotência
+  idempotencyKey String @unique
+  
+  // Status
+  processed   Boolean   @default(false)
+  processedAt DateTime?
+  
+  // Erros
+  errorMessage String?
+  
+  // RLS Policy: tenant_id = tenantId OR role = MASTER_ADMIN
+  @@map("platform_billing_events")
+}
+
+// Ledger Financeiro Consolidado do Master
+model MasterFinancialLedger {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  
+  // Tipo de Lançamento
+  entryType   String    // revenue_subscription, revenue_commission, cost_ai, refund, adjustment
+  
+  // Relacionamentos
+  tenantId    String?
+  invoiceId   String?
+  
+  // Valores (em centavos)
+  amount      Int
+  
+  // Categorização
+  category    String    // saas_subscription, ai_tokens, commission, fiscal_fee, etc.
+  
+  // Provider
+  provider    String?   // stripe, mercado_pago, asaas, openai, anthropic, elevenlabs
+  
+  // Período
+  period      DateTime  // Data de competência
+  
+  // Status
+  status      String    // pending, confirmed, reconciled
+  
+  // Reconciliação
+  reconciledAt DateTime?
+  reconciliationNote String?
+  
+  // Metadados
+  metadata    Json?
+  
+  @@index([period, entryType])
+  @@index([tenantId, period])
+  @@map("master_financial_ledger")
+}
+
+// Tentativas de Dunning
+model DunningAttempt {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  
+  // Relacionamentos
+  subscriptionId String
+  subscription PlatformSubscription @relation(fields: [subscriptionId], references: [id])
+  
+  invoiceId   String?
+  
+  // Tentativa
+  attemptNumber Int
+  
+  // Status
+  status      DunningAttemptStatus
+  
+  // Canal
+  channel     String    // email, sms, whatsapp
+  
+  // Resposta
+  response    Json?     // Dados da resposta (ex: email entregue, SMS lido)
+  
+  // Próxima Tentativa
+  nextAttemptAt DateTime?
+  
+  // RLS Policy: tenant_id = subscription.tenantId OR role = MASTER_ADMIN
+  @@map("dunning_attempts")
+}
+
+// Comissão por Reserva (Módulo 14 ↔ Módulo 1.B)
+model CommissionLedger {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  
+  // Relacionamentos
+  reservationId String
+  tenantId      String
+  
+  // Valores (em centavos)
+  grossAmount  Int       // Valor bruto da reserva
+  commissionAmount Int   // Comissão retida
+  netAmount    Int       // Valor líquido repassado
+  
+  // Status
+  status      String    // pending, rolling_reserve, liquidated, refunded
+  
+  // Rolling Reserve
+  rollingReserveAmount Int @default(0)
+  rollingReserveReleasedAt DateTime?
+  
+  // Pagamento
+  paidAt      DateTime?
+  paymentMethod String? // split, direct_transfer
+  
+  // Metadados
+  metadata    Json?
+  
+  // RLS Policy: tenant_id = tenantId OR role = MASTER_ADMIN
+  @@map("commission_ledger")
+}
+
+// Documentos Fiscais
+model FiscalDocument {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  
+  // Tipo
+  type        FiscalDocumentType
+  
+  // Relacionamentos
+  tenantId    String?
+  invoiceId   String?
+  
+  // Dados do Documento
+  documentNumber String?
+  documentDate DateTime?
+  
+  // Valores
+  amount      Int
+  
+  // Provider
+  provider    String    // asaas, focus_nfe, nfe_io
+  
+  // Arquivo
+  fileUrl     String?
+  
+  // Status
+  status      String    // pending, issued, cancelled
+  
+  // Metadados
+  metadata    Json?
+  
+  // RLS Policy: tenant_id = tenantId OR role = MASTER_ADMIN
+  @@map("fiscal_documents")
+}
+
+// ============================================================================
+// MÓDULO 2 - GESTÃO E REVENDA DE IA
+// ============================================================================
+
+// Uso de Tokens por Tenant
+model AITokenUsage {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  
+  // Relacionamentos
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+  
+  // Provider e Modelo
+  provider    TokenProvider
+  model       AIModel
+  
+  // Uso
+  tokensUsed  Int
+  
+  // Tipo de Uso
+  usageType   String    // chat, voice, rag, training, etc.
+  
+  // Referência
+  referenceId String?   // ID do recurso (ex: message_id, training_id)
+  
+  // Custo (em centavos)
+  costAmount  Int?
+  
+  // Metadados
+  metadata    Json?
+  
+  // RLS Policy: tenant_id = tenantId OR role = MASTER_ADMIN
+  @@index([tenantId, createdAt])
+  @@index([provider, createdAt])
+  @@map("ai_token_usage")
+}
+
+// Planos de Tokens (Markup)
+model AITokenPlan {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Provider
+  provider    TokenProvider @unique
+  
+  // Preços (por 1K tokens)
+  pricePer1KTokens Int // Preço de custo em centavos
+  markupPercentage Int // Markup percentual para revenda
+  
+  // Status
+  isActive    Boolean   @default(true)
+  
+  @@map("ai_token_plans")
+}
+
+// Orquestrador de Modelos (A/B Testing)
+model AIModelRouter {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Regra
+  ruleName    String    @unique
+  
+  // Condições
+  conditions  Json      // { tenantId: [...], usageType: [...], plan: [...] }
+  
+  // Roteamento
+  routing     Json      // { primary: { provider: "openai", model: "gpt4" }, fallback: [...] }
+  
+  // Status
+  isActive    Boolean   @default(true)
+  
+  // Versão
+  version     Int       @default(1)
+  
+  @@map("ai_model_router")
+}
+
+// ============================================================================
+// MÓDULO 3 - CONFIGURAÇÕES GLOBAIS & COFRE DE CHAVES
+// ============================================================================
+
+// Chaves de API Centralizadas (AES-256)
+model APIKey {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Provider
+  provider    String    @unique // openai, anthropic, elevenlabs, whisper, stripe, mercado_pago, asaas, etc.
+  
+  // Chave (criptografada)
+  encryptedKey String
+  
+  // Metadados
+  description String?
+  
+  // Status
+  isActive    Boolean   @default(true)
+  
+  // Uso
+  lastUsedAt  DateTime?
+  usageCount  Int       @default(0)
+  
+  @@map("api_keys")
+}
+
+// Configurações de Gateway de LLM
+model LLMGatewayConfig {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Provider
+  provider    TokenProvider @unique
+  
+  // Configuração
+  config      Json      // { baseUrl: "...", apiVersion: "...", timeout: 30000, ... }
+  
+  // Fallback
+  fallbackOrder Int[]   // Ordem de fallback
+  
+  // Status
+  isActive    Boolean   @default(true)
+  
+  // Health Check
+  lastHealthCheckAt DateTime?
+  healthStatus String?  // healthy, degraded, unavailable
+  
+  @@map("llm_gateway_config")
+}
+
+// ============================================================================
+// MÓDULO 4 - WHITE-LABEL & LANDING PAGE
+// ============================================================================
+
+// Bloco de Conteúdo da Landing Page
+model LandingPageBlock {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Tipo
+  blockType   String    // hero, features, pricing, testimonials, cta, etc.
+  
+  // Conteúdo
+  content     Json      // Estrutura do bloco
+  
+  // Ordenação
+  sortOrder   Int
+  
+  // Status
+  isActive    Boolean   @default(true)
+  
+  // Variantes (A/B Testing)
+  variant     String?   @default("A")
+  
+  @@index([blockType, sortOrder])
+  @@map("landing_page_blocks")
+}
+
+// Testes A/B
+model ABTest {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Identificação
+  name        String    @unique
+  
+  // Configuração
+  testType    String    // landing_page, pricing, cta, etc.
+  variants    Json      // { A: { blockId: "..." }, B: { blockId: "..." } }
+  
+  // Métricas
+  metrics     Json?     // { impressions: { A: 100, B: 100 }, conversions: { A: 5, B: 8 } }
+  
+  // Status
+  status      String    // draft, running, completed
+  
+  // Período
+  startAt     DateTime?
+  endAt       DateTime?
+  
+  // Vencedor
+  winner      String?
+  
+  @@map("ab_tests")
+}
+
+// ============================================================================
+// MÓDULO 6 - AUDITORIA, SEGURANÇA E CONFORMIDADE
+// ============================================================================
+
+// Logs de Auditoria (Imutáveis)
+model AuditLog {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  
+  // Usuário
+  userId      String?
+  userEmail   String?
+  
+  // Tenant
+  tenantId    String?
+  
+  // Ação
+  action      AuditAction
+  
+  // Detalhes
+  details     Json?
+  
+  // IP e User Agent
+  ipAddress   String?
+  userAgent   String?
+  
+  // Metadados
+  metadata    Json?
+  
+  // Trigger para imutabilidade: sem UPDATE/DELETE
+  @@map("audit_logs")
+}
+
+// ============================================================================
+// DOMÍNIO A: INTELIGÊNCIA E ATENDIMENTO (Módulos 7-10)
+// ============================================================================
+
+// Conversas (Unified Inbox - Módulo 7)
+model Conversation {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relacionamentos
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+  
+  // Canal
+  channelId   String
+  channel     Channel   @relation(fields: [channelId], references: [id])
+  
+  // Hóspede
+  guestId     String?
+  guest       Guest?    @relation(fields: [guestId], references: [id])
+  
+  // Identificação Externa
+  externalId  String?   // ID da conversa no canal (ex: WhatsApp group ID)
+  
+  // Status
+  status      String    // open, closed, archived
+  
+  // Atribuição
+  assignedToId String?
+  assignedTo  User?     @relation(fields: [assignedToId], references: [id])
+  
+  // Metadados
+  metadata    Json?     // { language: "pt-BR", tags: [...] }
+  
+  // Mensagens
+  messages    Message[]
+  
+  // RLS Policy: tenant_id = tenantId
+  @@index([tenantId, channelId, externalId])
+  @@map("conversations")
+}
+
+// Mensagens
+model Message {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  
+  // Relacionamentos
+  conversationId String
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  
+  // Remetente
+  senderType  String    // guest, tenant, ai
+  senderId    String?
+  
+  // Conteúdo
+  content     String?
+  
+  // Mídia
+  mediaUrl    String?
+  mediaType   String?   // image, video, audio, document
+  
+  // Direção
+  direction   MessageDirection
+  
+  // Status
+  status      MessageStatus
+  
+  // Provider Event ID
+  providerEventId String?
+  
+  // Metadados
+  metadata    Json?     // { intent: "booking", sentiment: "positive", ... }
+  
+  // RLS Policy: tenant_id = conversation.tenantId
+  @@index([conversationId, createdAt])
+  @@map("messages")
+}
+
+// Canais (Módulo 19)
+model Channel {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relacionamentos
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+  
+  // Tipo
+  type        ChannelType
+  
+  // Configuração
+  config      Json      // { webhookUrl: "...", apiKey: "...", ... }
+  
+  // Status
+  isActive    Boolean   @default(false)
+  isConnected Boolean   @default(false)
+  
+  // Metadados
+  metadata    Json?
+  
+  // RLS Policy: tenant_id = tenantId
+  @@unique([tenantId, type])
+  @@map("channels")
+}
+
+// Hóspedes (CRM - Módulo 17)
+model Guest {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relacionamentos
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+  
+  // Identificação
+  firstName   String?
+  lastName    String?
+  fullName    String?
+  
+  // Contato
+  email       String?
+  phone       String?
+  
+  // Perfil
+  avatarUrl   String?
+  
+  // Dados Demográficos
+  dateOfBirth DateTime?
+  gender      String?
+  
+  // Localização
+  country     String?
+  state       String?
+  city        String?
+  
+  // Canal Preferido
+  preferredChannel String?
+  
+  // Tags (IA - Módulo 17)
+  tags        String[]  @default([])
+  
+  // LTV e Histórico
+  lifetimeValue Int @default(0) // em centavos
+  totalStays   Int @default(0)
+  lastStayAt   DateTime?
+  
+  // Memória (Módulo 9)
+  memory       GuestMemory[]
+  
+  // Conversas
+  conversations Conversation[]
+  
+  // Reservas
+  reservations Reservation[]
+  
+  // Metadados
+  metadata    Json?
+  
+  // RLS Policy: tenant_id = tenantId
+  @@index([tenantId, phone])
+  @@index([tenantId, email])
+  @@map("guests")
+}
+
+// Memória Contextual de Longo Prazo (Módulo 9)
+model GuestMemory {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relacionamentos
+  guestId     String
+  guest       Guest     @relation(fields: [guestId], references: [id], onDelete: Cascade)
+  
+  // Tipo
+  memoryType  String    // preference, allergy, special_request, behavior, etc.
+  
+  // Conteúdo
+  content     String
+  
+  // Contexto
+  context     Json?     // { stayId: "...", conversationId: "...", ... }
+  
+  // Metadados
+  metadata    Json?
+  
+  // RLS Policy: tenant_id = guest.tenantId
+  @@index([guestId, memoryType])
+  @@map("guest_memory")
+}
+
+// Treinamento Institucional (RAG - Módulo 9)
+model TrainingDocument {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relacionamentos
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+  
+  // Documento
+  fileName    String
+  fileUrl     String?
+  
+  // Conteúdo
+  content     String?
+  
+  // Embeddings
+  embeddings  Json?     // Vetor de embeddings
+  
+  // Chunks
+  chunks      Json?     // Chunks processados
+  
+  // Status
+  status      String    // pending, processed, failed
+  
+  // Metadados
+  metadata    Json?
+  
+  // RLS Policy: tenant_id = tenantId
+  @@map("training_documents")
+}
+
+// Configurações de IA (Módulo 10)
+model AIBehaviorConfig {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relacionamentos
+  tenantId    String    @unique
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+  
+  // Persona
+  persona     Json      // { name: "...", description: "...", tone: "..." }
+  
+  // Autonomia
+  autonomy    Json      // { maxDiscountPercentage: 10, canNegotiate: true, ... }
+  
+  // CTAs
+  ctas        Json      // { triggers: [{ type: "...", action: "..." }] }
+  
+  // Horário
+  schedule    Json      // { aiAvailable: { start: "00:00", end: "23:59" }, ... }
+  
+  // Blacklist
+  blacklist   String[]  @default([])
+  
+  // RLS Policy: tenant_id = tenantId
+  @@map("ai_behavior_config")
+}
+
+// ============================================================================
+// DOMÍNIO B: COMERCIAL E RESERVAS (Módulos 11-14)
+// ============================================================================
+
+// Grupos de Quartos
+model RoomGroup {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relacionamentos
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+  
+  // Identificação
+  name        String
+  description String?
+  
+  // Ordenação
+  sortOrder   Int       @default(0)
+  
+  // Status
+  isActive    Boolean   @default(true)
+  
+  // Quartos
+  rooms       Room[]
+  
+  // Tarifário
+  ratePlanId  String?
+  ratePlan    RatePlan? @relation(fields: [ratePlanId], references: [id])
+  
+  // RLS Policy: tenant_id = tenantId
+  @@map("room_groups")
+}
+
+// Quartos
+model Room {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relacionamentos
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+  
+  roomGroupId String?
+  roomGroup   RoomGroup? @relation(fields: [roomGroupId], references: [id])
+  
+  // Identificação
+  name        String
+  description String?
+  
+  // Capacidade
+  maxAdults   Int       @default(2)
+  maxChildren Int       @default(0)
+  maxOccupancy Int      @default(2)
+  
+  // Comodidades
+  amenities   String[]  @default([])
+  
+  // Status Operacional
+  status      RoomStatus @default(AVAILABLE)
+  
+  // Fotos (Módulo 18)
+  photos      RoomPhoto[]
+  
+  // Disponibilidade
+  availability CalendarAvailability[]
+  
+  // Reservas
+  reservations Reservation[]
+  
+  // Bloqueios
+  blocks      RoomBlock[]
+  
+  // Ordenação
+  sortOrder   Int       @default(0)
+  
+  // Metadados
+  metadata    Json?
+  
+  // RLS Policy: tenant_id = tenantId
+  @@index([tenantId, roomGroupId])
+  @@map("rooms")
+}
+
+// Fotos de Quartos
+model RoomPhoto {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  
+  // Relacionamentos
+  roomId      String
+  room        Room      @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  
+  // Arquivo
+  fileUrl     String
+  thumbnailUrl String?
+  
+  // Ordenação
+  sortOrder   Int       @default(0)
+  
+  // Metadados
+  metadata    Json?     // { width: 1920, height: 1080, size: 1024, ... }
+  
+  // RLS Policy: tenant_id = room.tenantId
+  @@map("room_photos")
+}
+
+// Planos Tarifários (Módulo 11)
+model RatePlan {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relacionamentos
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+  
+  // Identificação
+  name        String
+  description String?
+  
+  // Tipo
+  rateType    RateType @default(PER_NIGHT)
+  
+  // Preço Base (em centavos)
+  basePrice   Int
+  
+  // Preços por Ocupação
+  occupancyPricing Json? // { adult: 10000, child: 5000, ... }
+  
+  // Preços por Faixa Etária (Módulo 11)
+  agePricing  Json?     // [{ minAge: 0, maxAge: 2, model: "FREE" }, ...]
+  
+  // Mínimo de Noites
+  minNights   Int       @default(1)
+  
+  // Status
+  isActive    Boolean   @default(true)
+  
+  // Hierarquia
+  priority    Int       @default(0) // Pacotes Fechados > Sazonalidade > Tarifa Base
+  
+  // Metadados
+  metadata    Json?
+  
+  // RLS Policy: tenant_id = tenantId
+  @@map("rate_plans")
+}
+
+// Regras de Sazonalidade (Módulo 11)
+model SeasonalRule {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relacionamentos
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+  
+  // Identificação
+  name        String
+  
+  // Período
+  startDate   DateTime
+  endDate     DateTime
+  
+  // Ajuste de Preço
+  priceAdjustmentType String // percentage, fixed
+  priceAdjustmentValue Int  // +10% ou +R$50,00
+  
+  // Aplicação
+  appliesTo   String[]  // ["all", "room_group_1", "room_1", ...]
+  
+  // Status
+  isActive    Boolean   @default(true)
+  
+  // Prioridade (Hierarquia: Pacote Fechado > Sazonalidade > Tarifa Base)
+  priority    Int       @default(10)
+  
+  // RLS Policy: tenant_id = tenantId
+  @@index([tenantId, startDate, endDate])
+  @@map("seasonal_rules")
+}
+
+// Pacotes Fechados (Módulo 11)
+model Package {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relacionamentos
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+  
+  // Identificação
+  name        String
+  description String?
+  
+  // Período
+  startDate   DateTime
+  endDate     DateTime
+  
+  // Preço (em centavos)
+  totalPrice  Int
+  
+  // Itens do Pacote
+  items       Json      // [{ roomGroupId: "...", quantity: 2, nights: 3 }, ...]
+  
+  // Disponibilidade
+  maxBookings Int?
+  bookedCount Int       @default(0)
+  
+  // Status
+  isActive    Boolean   @default(true)
+  
+  // Prioridade (Máxima - Pacotes Fechados > Sazonalidade > Tarifa Base)
+  priority    Int       @default(100)
+  
+  // RLS Policy: tenant_id = tenantId
+  @@map("packages")
+}
+
+// Calendário de Disponibilidade (Módulo 12)
+model CalendarAvailability {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relacionamentos
+  roomId      String
+  room        Room      @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  
+  // Data
+  date        DateTime  @db.Date
+  
+  // Status
+  status      RoomStatus
+  
+  // Preço (calculado dinamicamente)
+  price       Int?
+  
+  // Bloqueio
+  blockedById String?
+  
+  // Metadados
+  metadata    Json?
+  
+  // RLS Policy: tenant_id = room.tenantId
+  @@unique([roomId, date])
+  @@index([roomId, date])
+  @@map("calendar_availability")
+}
+
+// Bloqueios de Quartos (Módulo 12)
+model RoomBlock {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relacionamentos
+  roomId      String
+  room        Room      @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  
+  // Período
+  startDate   DateTime  @db.Date
+  endDate     DateTime  @db.Date
+  
+  // Motivo
+  reason      String
+  
+  // Status
+  isActive    Boolean   @default(true)
+  
+  // Metadados
+  metadata    Json?
+  
+  // RLS Policy: tenant_id = room.tenantId
+  @@index([roomId, startDate, endDate])
+  @@map("room_blocks")
+}
+
+// Reservas (Módulo 12)
+model Reservation {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relacionamentos
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+  
+  guestId     String?
+  guest       Guest?    @relation(fields: [guestId], references: [id])
+  
+  roomId      String
+  room        Room      @relation(fields: [roomId], references: [id])
+  
+  // Código de Confirmação
+  confirmationCode String @unique
+  
+  // Datas
+  checkInDate DateTime  @db.Date
+  checkOutDate DateTime @db.Date
+  
+  // Hóspedes
+  adults      Int
+  children    Int       @default(0)
+  
+  // Status
+  status      ReservationStatus @default(PENDING)
+  
+  // Valores (em centavos)
+  subtotal    Int
+  taxAmount   Int       @default(0)
+  totalAmount Int
+  
+  // Pagamento
+  paymentStatus String    // pending, paid, failed, refunded
+  paymentMethod String?
+  paymentReference String? // ID do pagamento no gateway
+  
+  // Comissão (Módulo 14 ↔ Módulo 1.B)
+  commissionAmount Int @default(0)
+  
+  // Canal de Origem
+  sourceChannel String?
+  
+  // Metadados
+  metadata    Json?
+  
+  // RLS Policy: tenant_id = tenantId
+  @@index([tenantId, checkInDate])
+  @@index([confirmationCode])
+  @@map("reservations")
+}
+
+// Sincronização iCal (Módulo 13)
+model ICalSyncLog {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  
+  // Relacionamentos
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+  
+  // Canal
+  channelId   String
+  channel     Channel   @relation(fields: [channelId], references: [id])
+  
+  // Operação
+  operation   String    // sync, push, pull
+  
+  // Status
+  status      String    // success, failed, partial
+  
+  // Detalhes
+  details     Json?
+  
+  // Metadados
+  metadata    Json?
+  
+  // RLS Policy: tenant_id = tenantId
+  @@index([tenantId, channelId, createdAt])
+  @@map("ical_sync_logs")
+}
+
+// ============================================================================
+// DOMÍNIO C: GESTÃO E RETENÇÃO (Módulos 15-18)
+// ============================================================================
+
+// Dashboard do Tenant (Módulo 15)
+model TenantDashboardWidget {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relacionamentos
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+  
+  // Widget
+  widgetType  String    // occupancy, revenue, upcoming_arrivals, etc.
+  config      Json?     // Configuração do widget
+  
+  // Layout
+  layout      Json?     // Posição e tamanho (react-grid-layout)
+  
+  // Status
+  isActive    Boolean   @default(true)
+  
+  // RLS Policy: tenant_id = tenantId
+  @@map("tenant_dashboard_widgets")
+}
+
+// Financeiro do Tenant (Módulo 16)
+model TenantFinancialTransaction {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  
+  // Relacionamentos
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+  
+  reservationId String?
+  
+  // Tipo
+  transactionType String // revenue, refund, fee, adjustment
+  
+  // Descrição
+  description String
+  
+  // Valores (em centavos)
+  amount      Int
+  
+  // Status
+  status      String    // pending, confirmed, reconciled
+  
+  // Período
+  period      DateTime  @db.Date
+  
+  // Metadados
+  metadata    Json?
+  
+  // RLS Policy: tenant_id = tenantId
+  @@index([tenantId, period])
+  @@map("tenant_financial_transactions")
+}
+
+// Mídias (Módulo 18)
+model Media {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  
+  // Relacionamentos
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+  
+  // Álbum
+  albumId     String?
+  album       MediaAlbum? @relation(fields: [albumId], references: [id])
+  
+  // Arquivo
+  fileUrl     String
+  thumbnailUrl String?
+  
+  // Tipo
+  mediaType   String    // image, video, audio, document
+  
+  // Metadados
+  metadata    Json?     // { width: 1920, height: 1080, size: 1024, ... }
+  
+  // Indexação RAG (Módulo 9)
+  embeddings  Json?
+  
+  // RLS Policy: tenant_id = tenantId
+  @@map("media")
+}
+
+// Álbuns de Mídia
+model MediaAlbum {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relacionamentos
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+  
+  // Identificação
+  name        String
+  description String?
+  
+  // Mídias
+  media       Media[]
+  
+  // Ordenação
+  sortOrder   Int       @default(0)
+  
+  // RLS Policy: tenant_id = tenantId
+  @@map("media_albums")
+}
+
+// ============================================================================
+// DOMÍNIO D: CONFIGURAÇÃO E EXPANSÃO (Módulos 19-22)
+// ============================================================================
+
+// Página do Tenant (Módulo 20)
+model TenantPage {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relacionamentos
+  tenantId    String    @unique
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+  
+  // Domínio
+  domain      String?   @unique
+  
+  // Configuração
+  config      Json      // { theme: "...", layout: "...", ... }
+  
+  // Status
+  isPublished Boolean   @default(false)
+  
+  // SSL
+  sslCertificateUrl String?
+  
+  // RLS Policy: tenant_id = tenantId
+  @@map("tenant_pages")
+}
+
+// ============================================================================
+// MÓDULO 21 - COPILOTO DE TREINAMENTO
+// ============================================================================
+
+// Trilhas Guiadas
+model GuidedTour {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Identificação
+  moduleId    String    // ID do módulo (ex: "1", "7", "12", "14", "21")
+  submoduleId String?   // ID do submódulo (ex: "14.pix", "12.calendar")
+  functionId  String?   // ID da função (ex: "14.create_pix", "12.block_room")
+  
+  // Hierarquia
+  hierarchyLevel TourHierarchyLevel
+  
+  // Alvo
+  targetRole  UserRole[] // Para quais papéis esta trilha é relevante
+  
+  // Conteúdo
+  title       String
+  description String?
+  
+  // Passos
+  steps       Json      // [{ selector: "#button", text: "...", position: "top", requiresAction: false }, ...]
+  
+  // Status
+  status      TourStatus @default(DRAFT)
+  
+  // Versão
+  version     Int       @default(1)
+  
+  // Metadados
+  metadata    Json?
+  
+  // Progresso
+  progress    TourProgress[]
+  
+  // Interações
+  interactions CopilotInteraction[]
+  
+  @@unique([moduleId, submoduleId, functionId, hierarchyLevel])
+  @@index([moduleId, hierarchyLevel])
+  @@map("guided_tours")
+}
+
+// Progresso do Tour
+model TourProgress {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relacionamentos
+  userId      String
+  user        User      @relation(fields: [userId], references: [id])
+  
+  tourId      String
+  tour        GuidedTour @relation(fields: [tourId], references: [id])
+  
+  // Progresso
+  currentStep Int       @default(0)
+  totalSteps  Int
+  
+  // Status
+  status      TrainingProgressStatus @default(NOT_STARTED)
+  
+  // Timestamps
+  startedAt   DateTime?
+  completedAt DateTime?
+  abandonedAt DateTime?
+  
+  // Metadados
+  metadata    Json?
+  
+  @@unique([userId, tourId])
+  @@index([userId, status])
+  @@map("tour_progress")
+}
+
+// Interações do Copiloto (Busca Semântica)
+model CopilotInteraction {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  
+  // Relacionamentos
+  userId      String
+  user        User      @relation(fields: [userId], references: [id])
+  
+  tourId      String?
+  tour        GuidedTour? @relation(fields: [tourId], references: [id])
+  
+  // Busca
+  query       String
+  
+  // Resultado
+  result      Json?     // { tourId: "...", step: 0, ... }
+  
+  // Metadados
+  metadata    Json?
+  
+  // RLS Policy: user.tenantId = tenantId OR user.role = MASTER_ADMIN
+  @@index([userId, createdAt])
+  @@map("copilot_interactions")
+}
+
+// Registro de Cobertura de Treinamento
+model TourCoverageRegistry {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Módulo
+  moduleId    String    @unique
+  
+  // Cobertura
+  coverage    Json      // { welcome: true, module: true, submodule: false, function: true, microhelp: true }
+  
+  // Status
+  status      String    // complete, partial, absent
+  
+  // Metadados
+  metadata    Json?
+  
+  @@map("tour_coverage_registry")
+}
+
+// Checklist de Onboarding (Módulo 21)
+model OnboardingChecklist {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relacionamentos
+  tenantId    String    @unique
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+  
+  // Itens
+  items       Json      // [{ task: "...", completed: false, tourId: "..." }, ...]
+  
+  // Progresso
+  completedCount Int @default(0)
+  totalCount    Int
+  
+  // Status
+  status      String    // not_started, in_progress, completed
+  
+  // Metadados
+  metadata    Json?
+  
+  // RLS Policy: tenant_id = tenantId
+  @@map("onboarding_checklists")
+}
+
+// ============================================================================
+// MÓDULO 22 - FINANCEIRO SAAS (TENANT)
+// ============================================================================
+
+// Portal de Billing do Tenant (contraparte do Módulo 1.B)
+// Usa as mesmas tabelas do Módulo 1.B, mas com views específicas para o Tenant
+// As tabelas principais já estão definidas acima (PlatformSubscription, PlatformInvoice, etc.)
+
+// ============================================================================
+// TABELAS DE SISTEMA
+// ============================================================================
+
+// Configurações do Sistema
+model SystemConfig {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Chave
+  key         String    @unique
+  
+  // Valor
+  value       Json
+  
+  // Descrição
+  description String?
+  
+  @@map("system_configs")
+}
+
+// Fila de Jobs (BullMQ)
+model JobQueue {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  
+  // Job
+  queueName   String
+  jobId       String    @unique
+  
+  // Dados
+  data        Json?
+  
+  // Status
+  status      String    // waiting, active, completed, failed, delayed
+  
+  // Tentativas
+  attempts    Int       @default(0)
+  
+  // Erros
+  errorMessage String?
+  
+  // Timestamps
+  startedAt   DateTime?
+  completedAt DateTime?
+  
+  @@index([queueName, status, createdAt])
+  @@map("job_queue")
+}
+
+// Cache (Redis)
+model CacheEntry {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Chave
+  key         String    @unique
+  
+  // Valor
+  value       Json?
+  
+  // TTL
+  expiresAt   DateTime?
+  
+  @@index([expiresAt])
+  @@map("cache_entries")
+}

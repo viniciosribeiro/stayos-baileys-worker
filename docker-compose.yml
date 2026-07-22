@@ -1,0 +1,129 @@
+version: '3.8'
+
+services:
+  # ============================================================================
+  # POSTGRESQL
+  # ============================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: stayos-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: stayos
+    ports:
+      - "5432:5432"
+    volumes:
+      - stayos-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - stayos-network
+
+  # ============================================================================
+  # REDIS
+  # ============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: stayos-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - stayos-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - stayos-network
+
+  # ============================================================================
+  # WEB APP (Next.js)
+  # ============================================================================
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: stayos-web
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/stayos?schema=public
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      NEXTAUTH_SECRET: your-secret-key-here
+      NEXTAUTH_URL: http://localhost:3000
+      WORKER_URL: http://worker:4000
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+      - /app/node_modules
+    networks:
+      - stayos-network
+
+  # ============================================================================
+  # WORKER (Node.js)
+  # ============================================================================
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: stayos-worker
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/stayos?schema=public
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      WORKER_PORT: 4000
+      WORKER_SECRET: your-worker-secret-here
+    ports:
+      - "4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+      - /app/node_modules
+    networks:
+      - stayos-network
+
+  # ============================================================================
+  # PRISMA STUDIO (Opcional)
+  # ============================================================================
+  prisma-studio:
+    image: node:20-alpine
+    container_name: stayos-prisma-studio
+    working_dir: /app
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/stayos?schema=public
+    command: npx prisma studio
+    ports:
+      - "5555:5555"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    networks:
+      - stayos-network
+    profiles:
+      - dev
+
+volumes:
+  stayos-postgres-data:
+  stayos-redis-data:
+
+networks:
+  stayos-network:
+    driver: bridge
